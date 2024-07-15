@@ -1,22 +1,14 @@
 import { playAudioFile } from "audic";
 import "colors";
 import ms from "ms";
-import { byAvailable, byClass } from "./filters";
+import { config } from "./config";
+import { byAvailable } from "./filters";
 import {
   bookSeat,
   getFreePlaces as getFreeSeats,
   startDraftOrder,
 } from "./order";
-import {
-  CarriageClass,
-  Station,
-  getTicketTypes as getPlaces,
-} from "./ticket-types";
-
-const FROM = Station.TBILISI;
-const TO = Station.BATUMI;
-const TICKETS_NEEDED = 2;
-const INTERVAL = "20s";
+import { getTicketTypes as getPlaces } from "./ticket-types";
 
 function getDataFillingURL(orderKey: string) {
   return (
@@ -33,25 +25,35 @@ function playRingtone() {
 
 async function findTickets(): Promise<boolean> {
   const places = await getPlaces({
-    leavingDate: new Date("2024-07-15"),
-    fromStation: FROM,
-    toStation: TO,
+    leavingDate: new Date(config.date),
+    fromStation: config.from,
+    toStation: config.to,
   });
-  const filteredPlaces = places
-    .filter(byAvailable)
-    .filter(byClass([CarriageClass.Second, CarriageClass.First]));
+  console.log(
+    "Found places:",
+    places.map((p) => [
+      p.LeavingDateTime,
+      p.LeavingDateTime.toLocaleTimeString(),
+      p.CarriageClass.Name,
+    ]),
+  );
+  let filteredPlaces = places.filter(byAvailable);
+  for (const filter of config.filters) {
+    filteredPlaces = filteredPlaces.filter(filter);
+  }
   const place = filteredPlaces[0];
   if (!place) {
+    console.log("No places matching filter".red);
     return false;
   }
-  const seats = await getFreeSeats(place, FROM, TO);
+  const seats = await getFreeSeats(place, config.from, config.to);
   if (!seats.length) {
     return false;
   }
   await Promise.all(
-    seats.slice(0, TICKETS_NEEDED).map(async (seat) => {
-      const orderKey = await startDraftOrder(place, FROM, TO);
-      await bookSeat(orderKey, place, seat, FROM, TO);
+    seats.slice(0, config.ticketsNeeded).map(async (seat) => {
+      const orderKey = await startDraftOrder(place, config.from, config.to);
+      await bookSeat(orderKey, place, seat, config.from, config.to);
       console.log("Book the seat:", getDataFillingURL(orderKey).cyan);
     }),
   );
@@ -65,8 +67,6 @@ const interval = setInterval(() => {
   findTickets()
     .catch((err) => {
       console.error(err);
-      clearInterval(interval);
-      process.exit(1);
     })
     .then((found) => {
       if (found) {
@@ -74,7 +74,4 @@ const interval = setInterval(() => {
         playRingtone().then(() => process.exit(0));
       }
     });
-}, ms(INTERVAL));
-
-// Nino Lomtadze 01017007453
-// Ana Tsakadze 01019081293
+}, ms(config.interval));
