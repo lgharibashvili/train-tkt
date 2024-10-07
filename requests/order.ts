@@ -1,6 +1,9 @@
 import z from "zod";
+import logger from "../lib/logger";
 import { client } from "./client";
 import { Place, Station } from "./ticket-types";
+
+const DATE_FORMAT = "YYYY-MM-DDTHH:mm:ss";
 
 const DraftOrderData = z.object({
   OrderKey: z.string(),
@@ -60,6 +63,7 @@ export async function getFreePlaces(
       sourceStation: fromStation.toString(),
       destinationStation: toStation.toString(),
     })
+    .effect((data) => logger.debug(data, "GET map:"))
     .then((data) => MapData.parse(data));
   return data.FreePlaces;
 }
@@ -92,8 +96,8 @@ export async function bookSeat(
         wagonRankId: place.Rank.CarriageRankId.toString(),
         trainNumber: place.Train.TrainNumber.toString(),
         wagonTypeId: seat.PlaceTypeId.toString(),
-        leavingDate: place.LeavingDateTime.toISOString(),
-        enteringDate: place.EnteringDateTime.toISOString(),
+        leavingDate: place.LeavingDateTime.format(DATE_FORMAT),
+        enteringDate: place.EnteringDateTime.format(DATE_FORMAT),
         placeTypeName: seat.PlaceTypeName,
         isBackPlace: "false",
         orderKey: orderKey,

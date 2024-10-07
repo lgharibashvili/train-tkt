@@ -2,76 +2,128 @@ import { playAudioFile } from "audic";
 import "colors";
 import ms from "ms";
 import { config } from "./config";
-import { byAvailable } from "./filters";
+import logger from "./lib/logger";
 import {
   bookSeat,
   getFreePlaces as getFreeSeats,
+  Seat,
   startDraftOrder,
-} from "./order";
-import { getTicketTypes as getPlaces } from "./ticket-types";
+} from "./requests/order";
+import { getTicketTypes as getPlaces, Place } from "./requests/ticket-types";
 
-function getDataFillingURL(orderKey: string) {
-  return (
-    "https://tkt.ge/railway/datafilling?" +
-    new URLSearchParams({
-      orderkey: orderKey,
-    })
-  );
-}
+const DEFAULT_FILTERS = [
+  /*byAvailable*/
+];
 
-function playRingtone() {
-  return playAudioFile("./ringtone.wav");
-}
+class Executor {
+  private retries = 0;
+  private interval: NodeJS.Timeout | null = null;
 
-async function findTickets(): Promise<boolean> {
-  const places = await getPlaces({
-    leavingDate: new Date(config.date),
-    fromStation: config.from,
-    toStation: config.to,
-  });
-  console.log(
-    "Found places:",
-    places.map((p) => [
-      p.LeavingDateTime,
-      p.LeavingDateTime.toLocaleTimeString(),
-      p.CarriageClass.Name,
-    ]),
-  );
-  let filteredPlaces = places.filter(byAvailable);
-  for (const filter of config.filters) {
-    filteredPlaces = filteredPlaces.filter(filter);
+  start() {
+    if (this.interval) {
+      throw new Error("Already started");
+    }
+    this.interval = setInterval(() => {
+      this.callback().catch((err) => console.error(err));
+    }, ms(config.interval));
   }
-  const place = filteredPlaces[0];
-  if (!place) {
-    console.log("No places matching filter".red);
-    return false;
-  }
-  const seats = await getFreeSeats(place, config.from, config.to);
-  if (!seats.length) {
-    return false;
-  }
-  await Promise.all(
-    seats.slice(0, config.ticketsNeeded).map(async (seat) => {
-      const orderKey = await startDraftOrder(place, config.from, config.to);
-      await bookSeat(orderKey, place, seat, config.from, config.to);
-      console.log("Book the seat:", getDataFillingURL(orderKey).cyan);
-    }),
-  );
-  return true;
-}
 
-let retries = 0;
-const interval = setInterval(() => {
-  retries++;
-  console.log(`${retries}: Checking for tickets...`);
-  findTickets()
-    .catch((err) => {
-      console.error(err);
-    })
-    .then((found) => {
-      if (found) {
-        clearInterval(interval);
-        playRingtone().then(() => process.exit(0));
+  stop() {
+    clearInterval(this.interval);
+  }
+
+  private async callback() {
+    this.retries++;
+    console.log();
+    logger.info(`Checking for tickets... (${this.retries})`);
+    const tickets = await this.findTickets();
+    if (tickets.length) {
+      console.log("Booking tickets...");
+      await this.bookTickets(tickets);
+      this.stop();
+      await this.playRingtone();
+      process.exit(0);
+    }
+  }
+
+  private filterPlaces(places: Place[]) {
+    const filters = DEFAULT_FILTERS.concat(config.filters);
+    const filteredPlaces: Place[] = [];
+    for (const place of places) {
+      const firstReason = filters
+        .values()
+        .map((filter) => filter(place))
+        .filter((result) => result !== true)
+        .next().value;
+      const log = `- ${place.LeavingDateTime.format("LT")} ${place.CarriageClass.Name} ${place.MoneyAmount}₾`;
+      if (!firstReason) {
+        filteredPlaces.push(place);
+        logger.info(log.blue);
+      } else {
+        logger.info(`${log} (${firstReason})`.red);
       }
+    }
+    return filteredPlaces;
+  }
+
+  private async findTickets(): Promise<[Place, Seat][]> {
+    const places = await getPlaces({
+      leavingDate: new Date(config.date),
+      fromStation: config.from,
+      toStation: config.to,
     });
-}, ms(config.interval));
+    if (places.length) {
+      logger.info(
+        `Found ${places.length} ${pluralize("place", places.length)}:`,
+      );
+    } else {
+      logger.info("No places found".red);
+      return [];
+    }
+    const filteredPlaces = this.filterPlaces(places);
+    if (!filteredPlaces) {
+      logger.info("No places matching filter".red);
+      return [];
+    }
+    const seats = (
+      await Promise.all(
+        filteredPlaces.map((place) =>
+          getFreeSeats(place, config.from, config.to).then((seats) =>
+            seats.map((seat): [Place, Seat] => [place, seat]),
+          ),
+        ),
+      )
+    ).flat();
+    return seats;
+  }
+
+  private bookTickets(tickets: [Place, Seat][]) {
+    return Promise.all(
+      tickets.slice(0, config.ticketsNeeded).map(async ([place, seat]) => {
+        const orderKey = await startDraftOrder(place, config.from, config.to);
+        await bookSeat(orderKey, place, seat, config.from, config.to);
+        logger.info(`Book the seat: ${this.getDataFillingURL(orderKey).cyan}`);
+      }),
+    );
+  }
+
+  private getDataFillingURL(orderKey: string) {
+    return (
+      "https://tkt.ge/railway/datafilling?" +
+      new URLSearchParams({
+        orderkey: orderKey,
+      })
+    );
+  }
+
+  private playRingtone() {
+    return playAudioFile("./ringtone.wav");
+  }
+}
+
+function pluralize(singular: string, n: number) {
+  return n === 1 ? singular : singular + "s";
+}
+
+const executor = new Executor();
+executor.start();

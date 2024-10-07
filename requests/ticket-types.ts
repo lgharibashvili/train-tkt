@@ -1,5 +1,14 @@
 import z from "zod";
+import { config } from "../config";
+import datetime from "../lib/datetime";
+import logger from "../lib/logger";
+import "../lib/promise-effect";
 import { client } from "./client";
+
+function parseDate(timestamp: string) {
+  // Server returns timestamps in UTC which we convert to Tbilisi time
+  return datetime.tz(timestamp, config.tz);
+}
 
 export const Place = z.object({
   Train: z.object({
@@ -17,8 +26,8 @@ export const Place = z.object({
     Name: z.string(),
     CarriageName: z.string(),
   }),
-  LeavingDateTime: z.string().transform((str) => new Date(str)),
-  EnteringDateTime: z.string().transform((str) => new Date(str)),
+  LeavingDateTime: z.string().transform(parseDate),
+  EnteringDateTime: z.string().transform(parseDate),
   MoneyAmount: z.number(),
   AvailableCount: z.number().nullable(),
 });
@@ -56,6 +65,7 @@ export async function getTicketTypes({
       fromStationNumber: fromStation.toString(),
       toStationNumber: toStation.toString(),
     })
+    .effect((data) => logger.debug(data, "GET ticketTypes:"))
     .then((data) => TicketTypesData.parse(data));
   return data.Places;
 }
